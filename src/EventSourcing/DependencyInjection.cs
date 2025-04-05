@@ -13,6 +13,11 @@ public static class DependencyInjection
             return new SqlEventStore(connectionString, publisher);
         });
         
+        services.AddScoped<IRepository>(sp => 
+        {
+            return new ReadmodelRepository(connectionString);
+        });
+        
         return services;
     }
 }

@@ -30,6 +30,17 @@ public class EventSourcingIntegrationTests : IAsyncLifetime
         END
         """);
         
+        await _sqlContainer.ExecScriptAsync(@"
+            IF OBJECT_ID('dbo.Readmodels', 'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.Readmodels (
+                    AggregateId UNIQUEIDENTIFIER PRIMARY KEY,
+                    ReadmodelType NVARCHAR(500) NOT NULL,
+                    ReadmodelData NVARCHAR(MAX) NOT NULL
+                );
+            END
+        ");
+        
         var services = new ServiceCollection();
         services.AddMediatR(o => o.RegisterServicesFromAssemblyContaining<EventSourcingIntegrationTests>());
         services.AddEventSourcing(_sqlContainer.GetConnectionString());
@@ -69,6 +80,50 @@ public class EventSourcingIntegrationTests : IAsyncLifetime
         Assert.Equal("Updated Name", finalAggregate.Name);
         Assert.Equal(aggregateId, finalAggregate.Id);
     }
+    
+    [Fact]
+    public async Task SaveLoadDelete_ReadmodelRepository_Works()
+    {
+        var repository = _serviceProvider.GetRequiredService<IRepository>();
+        var readmodel = new ExampleReadmodel(Guid.NewGuid(), "Test Name");
+
+        await repository.SaveAsync(readmodel);
+
+        var loaded = await repository.LoadAsync<ExampleReadmodel>(readmodel.Id);
+        Assert.NotNull(loaded);
+        Assert.Equal(readmodel.Id, loaded!.Id);
+        Assert.Equal("Test Name", loaded!.Name);
+
+        var updatedReadmodel = new ExampleReadmodel(readmodel.Id, "Updated Name");
+        await repository.SaveAsync(updatedReadmodel);
+
+        var loadedUpdated = await repository.LoadAsync<ExampleReadmodel>(readmodel.Id);
+        Assert.NotNull(loadedUpdated);
+        Assert.Equal("Updated Name", loadedUpdated!.Name);
+
+        await repository.DeleteAsync(readmodel.Id);
+        var afterDelete = await repository.LoadAsync<ExampleReadmodel>(readmodel.Id);
+        Assert.Null(afterDelete);
+    }
+    
+    [Fact]
+    public void ExampleProjection_Projects_Correctly()
+    {
+        var aggregateId = Guid.NewGuid();
+        var events = new List<DomainEvent>
+        {
+            new ExampleCreatedEvent(aggregateId, "Initial Name"),
+            new ExampleNameChangedEvent(aggregateId, "Updated Name")
+        };
+        var eventStream = new EventStream(aggregateId, events);
+        var projection = new ExampleProjection(eventStream);
+
+        var readmodel = projection.Project(aggregateId) as ExampleReadmodel;
+
+        Assert.NotNull(readmodel);
+        Assert.Equal(aggregateId, readmodel!.Id);
+        Assert.Equal("Updated Name", readmodel!.Name);
+    }
 }
 
 public record ExampleCreatedEvent(Guid AggregateId, string Name) : DomainEvent;
@@ -104,3 +159,24 @@ public record ExampleAggregate : AggregateRoot
             _ => this
         };
 }
+
+public record ExampleProjection(EventStream EventStream) : Projection(EventStream)
+{
+    public override IReadmodel? Project(Guid aggregateRootId)
+    {
+        ExampleReadmodel? readmodel = null; 
+        foreach (var @event in EventStream.Events) 
+        {
+            readmodel = @event switch
+            {
+                ExampleCreatedEvent e => new ExampleReadmodel(e.AggregateId, e.Name),
+                ExampleNameChangedEvent e when readmodel is not null => readmodel with { Name = e.NewName },
+                _ => readmodel
+            };
+        }
+        
+        return readmodel;
+    }
+}
+
+public record ExampleReadmodel(Guid Id, string Name) : IReadmodel;
