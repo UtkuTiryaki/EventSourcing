@@ -44,10 +44,25 @@ public class EventSourcingIntegrationTests : IAsyncLifetime
         var services = new ServiceCollection();
         services.AddMediatR(o => o.RegisterServicesFromAssemblyContaining<EventSourcingIntegrationTests>());
         services.AddEventSourcing(_sqlContainer.GetConnectionString());
+        services.AddCqrs();
         _serviceProvider = services.BuildServiceProvider();
     }
     
     public Task DisposeAsync() => _sqlContainer.DisposeAsync().AsTask();
+    
+    [Fact]
+    public async Task SendAsync_Command_WithResponse_ReturnsCorrectValue()
+    {
+        // Arrange
+        var bus = _serviceProvider.GetRequiredService<IBus>();
+        var command = new TestCommand("Test");
+
+        // Act
+        var result = await bus.SendAsync(command);
+
+        // Assert
+        Assert.Equal("Test", result);
+    }
     
     [Fact]
     [Trait("DockerPlatform", "Linux")]
@@ -123,6 +138,15 @@ public class EventSourcingIntegrationTests : IAsyncLifetime
         Assert.NotNull(readmodel);
         Assert.Equal(aggregateId, readmodel!.Id);
         Assert.Equal("Updated Name", readmodel!.Name);
+    }
+}
+
+public record TestCommand(string Name) : ICommand<string>;
+public record TestCommandHandler : ICommandHandler<TestCommand, string>
+{
+    public Task<string> HandleAsync(TestCommand command, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(command.Name);
     }
 }
 
